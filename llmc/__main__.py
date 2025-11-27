@@ -25,6 +25,16 @@ from llmc.utils import (check_config, deploy_all_modality, get_modality,
 from llmc.utils.registry_factory import ALGO_REGISTRY, MODEL_REGISTRY
 
 
+def just_eval(config):
+    model = MODEL_REGISTRY[config.model.type](config)
+
+    logger.info(f'model: {model}')
+    logger.info(f'tokenizer: {model.get_tokenizer()}')
+
+    eval_list = get_eval_list(model, config)
+    eval_model(model, None, eval_list, eval_pos='pretrain')
+
+
 def main(config):
     model = MODEL_REGISTRY[config.model.type](config)
 
@@ -183,11 +193,18 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, required=True)
     parser.add_argument('--task_id', type=str, required=True)
+    parser.add_argument('--eval', type=str, required=False,  default=None)
     args = parser.parse_args()
+
 
     with open(args.config, 'r') as file:
         config = yaml.safe_load(file)
     config = EasyDict(config)
+
+    only_eval = False
+    if args.eval is not None:
+        config["model"]["path"] = args.eval
+        only_eval = True
 
     init_process_group(backend='nccl')
     torch.cuda.set_device(int(os.environ['LOCAL_RANK']))
@@ -195,7 +212,8 @@ if __name__ == '__main__':
     if int(os.environ['RANK']) != 0:
         logger.remove()
 
-    check_config(config)
+    if not only_eval:
+        check_config(config)
 
     logger.info(f'args: {args}')
     logger.info(f'config:\n{json.dumps(config, ensure_ascii=False, indent=4)}')
@@ -208,7 +226,7 @@ if __name__ == '__main__':
 
     # Ensure only the main process creates directories
     if int(os.environ['RANK']) == 0:
-        if 'save' in config:
+        if 'save' in config and not only_eval:
             if config.save.get('save_trans', False):
                 save_trans_path = os.path.join(
                     config.save.save_path, 'transformed_model'
@@ -258,7 +276,10 @@ if __name__ == '__main__':
     # Synchronize all processes after directory creation
     dist.barrier()
 
-    main(config)
+    if only_eval:
+        just_eval(config)
+    else:
+        main(config)
 
     destroy_process_group()
 
